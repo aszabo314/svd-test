@@ -13,8 +13,10 @@ module internal QRHelpers =
         abs v <= eps
 
     let inline applyGivensMat (mat : NativeMatrix< ^a >) (c : int) (r : int) (cos : ^a) (sin : ^a) =
+#if DEBUG
         let s = min mat.SX mat.SY |> int
-        if c < 0 || c >= s || r < 0 || r >= s then printfn "bad givens (%d, %d)" c r
+        if c < 0 || c >= s || r < 0 || r >= s then failwithf "bad givens (%d, %d)" c r
+#endif
         let ptrQ = NativePtr.toNativeInt mat.Pointer
         let dcQ = nativeint sizeof< ^a > * nativeint mat.DX
         let drQ = nativeint sizeof< ^a > * nativeint mat.DY
@@ -36,8 +38,10 @@ module internal QRHelpers =
             p1 <- p1 + drQ
                 
     let inline applyGivensTransposedMat (mat : NativeMatrix< ^a >) (c : int) (r : int) (cos : ^a) (sin :  ^a) =
+#if DEBUG
         let s = min mat.SX mat.SY |> int
-        if c < 0 || c >= s || r < 0 || r >= s then printfn "bad givens (%d, %d)" c r
+        if c < 0 || c >= s || r < 0 || r >= s then failwithf "bad givens (%d, %d)" c r
+#endif
         let ptrQ = NativePtr.toNativeInt mat.Pointer
         let dcQ = nativeint sizeof< ^a > * nativeint mat.DX
         let drQ = nativeint sizeof< ^a > * nativeint mat.DY
@@ -110,9 +114,7 @@ module internal QRHelpers =
     let inline rqDecomposeNative (eps : ^a) (pR : NativeMatrix< ^a >) (pQ : NativeMatrix< ^a >) =
         let rows = int pR.SY
         let cols = int pR.SX
-
         if rows > cols then failwithf "cannot RQ decompose matrix with %d rows and %d cols" rows cols
-
 
         // pQ <- identity
         pQ.SetByCoord (fun (v : V2i) -> if v.X = v.Y then LanguagePrimitives.GenericOne else LanguagePrimitives.GenericZero)
@@ -190,17 +192,21 @@ module internal QRHelpers =
         let dbr = nativeint B.DY * sa
         let dbc = nativeint B.DX * sa
         
-        let inline read ptr = NativeInt.read< ^a > ptr
-            // let dist = ptr - pB
-            // if dist < 0n || dist >= pbSize then 
-            //     failwithf "bad offset: %A" (int64 pbSize / int64 sizeof< ^a >)
-            // NativeInt.read< ^a> ptr
+        let inline read (ptr : nativeint) : ^a = 
+#if DEBUG
+             let dist = ptr - pB
+             if dist < 0n || dist >= pbSize then 
+                 failwithf "bad offset: %A" (int64 pbSize / int64 sizeof< ^a >)
+#endif
+             NativeInt.read< ^a> ptr
 
-        let inline write ptr value =  NativeInt.write< ^a > ptr value
-            // let dist = ptr - pB
-            // if dist < 0n || dist >= pbSize then 
-            //     failwithf "bad offset: %A" (int64 pbSize / int64 sizeof< ^a >)
-            // NativeInt.write ptr value
+        let inline write (ptr : nativeint) (value : ^a) =  
+#if DEBUG
+             let dist = ptr - pB
+             if dist < 0n || dist >= pbSize then 
+                 failwithf "bad offset: %A" (int64 pbSize / int64 sizeof< ^a >)
+#endif
+             NativeInt.write< ^a > ptr value
 
         let mutable anorm = LanguagePrimitives.GenericZero
 
@@ -311,7 +317,7 @@ module internal QRHelpers =
 type QR private() =
 
     static let doubleEps = 1E-20
-    static let floatEps = 1E-15f
+    static let floatEps =  float32 1E-6
 
 
     static member DecomposeInPlace(Q : float[,], R : float[,]) =
@@ -717,7 +723,7 @@ module QR =
 type RQ private() =
 
     static let doubleEps = 1E-20
-    static let floatEps = 1E-15f
+    static let floatEps =  float32 1E-6
 
 
     static member DecomposeInPlace(R : float[,], Q : float[,]) =

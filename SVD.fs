@@ -31,23 +31,31 @@ module private SVDHelpers =
 
         let prvl = pB + dbc
         let drvl = dw
-        
-        let inline rvl i =
-            //if i < 0 || i >= cccc then printfn "rvl %d" i
+
+        let inline rvl (i : int) : ^a =
+#if DEBUG
+            if i < 0 || i >= n then failwithf "rvl %d" i
+#endif
             if i = 0 then rvl0
             else NativeInt.read< ^a > (prvl + nativeint (i - 1) * drvl) //B.[i-1,i]
                 
-        let inline setrvl i v =
-            //if i < 0 || i >= cccc then printfn "setrvl %d %A" i v
+        let inline setrvl (i : int) (v : ^a) =
+#if DEBUG
+            if i < 0 || i >= n then failwithf "setrvl %d %A" i v
+#endif
             if i = 0 then rvl0 <- v
             else NativeInt.write (prvl + nativeint (i - 1) * drvl) v //B.[i-1,i] <- v
 
-        let inline w i =
-            //if i < 0 || i >= cccc then printfn "w %d" i
+        let inline w (i : int) : ^a =
+#if DEBUG
+            if i < 0 || i >= n then failwithf "w %d" i
+#endif
             NativeInt.read< ^a > (pw + nativeint i * dw)
             
-        let inline setw i (v :  ^a) =
-            //if i < 0 || i >= cccc then printfn "setw %d %A" i v
+        let inline setw (i : int) (v :  ^a) =
+#if DEBUG
+            if i < 0 || i >= n then failwithf "setw %d %A" i v
+#endif
             NativeInt.write (pw + nativeint i * dw) v
              
         let mutable f : ^a = LanguagePrimitives.GenericZero
@@ -69,14 +77,11 @@ module private SVDHelpers =
                 let mutable testing = true
                 while testing && l >= 0 do
                     nm <- l - 1
-                    if abs (rvl l) + anorm = anorm then
+                    if l = 0 || abs (rvl l) + anorm = anorm then
                         flag <- false
                         testing <- false
                     elif (abs (w nm) + anorm = anorm) then
-                        testing <- false
-                    elif l = 0 then
-                        flag <- false
-                        testing <- false                    
+                        testing <- false    
                     else
                         dec &l
 
@@ -84,8 +89,10 @@ module private SVDHelpers =
                 if flag then
                     c <- LanguagePrimitives.GenericZero
                     s <- LanguagePrimitives.GenericOne
-                    for i in l .. k do
+                    let mutable i = l
+                    while i <= k do
                         f <- s * rvl i
+                        setrvl i (c * rvl i)
                         if abs f + anorm <> anorm then
                             g <- w i //B.[i,i]
                             h <- pythag f g
@@ -95,7 +102,10 @@ module private SVDHelpers =
                             s <- -f * h
 
                             applyGivensMat U nm i c s
-    
+                            i <- i + 1
+                        else
+                            i <- k+1
+
                 z <- w k //B.[k,k] 
                 if l = k then
                     conv <- true
@@ -156,73 +166,73 @@ module private SVDHelpers =
         for i in 1 .. m - 1 do
             setrvl i LanguagePrimitives.GenericZero
 
-        // let inline swap i0 i1 =
-        //     applyGivensMat U i0 i1 LanguagePrimitives.GenericZero LanguagePrimitives.GenericOne
-        //     let t = w i0
-        //     setw i0 (w i1)
-        //     setw i1 t
-        //     applyGivensTransposedMat Vt i0 i1 LanguagePrimitives.GenericZero LanguagePrimitives.GenericOne
+        let inline swap i0 i1 =
+            applyGivensMat U i0 i1 LanguagePrimitives.GenericZero LanguagePrimitives.GenericOne
+            let t = w i0
+            setw i0 (w i1)
+            setw i1 t
+            applyGivensTransposedMat Vt i0 i1 LanguagePrimitives.GenericZero LanguagePrimitives.GenericOne
 
-        // let cmp =
-        //     { new System.Collections.Generic.IComparer< ^a > with
-        //         member x.Compare(l, r) =
-        //             compare (abs l) (abs r)
-        //     }
+        let cmp =
+            { new System.Collections.Generic.IComparer< ^a > with
+                member x.Compare(l, r) =
+                    compare (abs l) (abs r)
+            }
 
-        // let values = 
-        //     //SortedSetExt< ^a * _ >(cmp)
-        //     System.Collections.Generic.SortedDictionary< ^a, _ >(cmp)
-        // for i in 0 .. m - 1 do
-        //     let v = w i //B.[i,i]
-        //     match values.TryGetValue(v) with
-        //     | (true,o) -> 
-        //         values.[v] <- i::o
-        //     | _ -> 
-        //         values.[v] <- [i]
-        //         // values <- 
-        //         //     MapExt.alter v (fun o ->
-        //         //         let o = defaultArg o []
-        //         //         Some (i :: o)
-        //         //     ) values
+        let values = 
+            //SortedSetExt< ^a * _ >(cmp)
+            System.Collections.Generic.SortedDictionary< ^a, _ >(cmp)
+        for i in 0 .. m - 1 do
+            let v = w i //B.[i,i]
+            match values.TryGetValue(v) with
+            | (true,o) -> 
+                values.[v] <- i::o
+            | _ -> 
+                values.[v] <- [i]
+                // values <- 
+                //     MapExt.alter v (fun o ->
+                //         let o = defaultArg o []
+                //         Some (i :: o)
+                //     ) values
                 
-        // for i0 in 0..m-1 do
-        //     let biggestIdx =
-        //         let (KeyValue(key,indices)) = values |> Seq.last
-        //         //let (key, indices) = MapExt.tryItem (values.Count - 1) values |> Option.get
-        //         match indices with
-        //             | [i0] -> 
-        //                 values.Remove(key) |> ignore
-        //                 //values <- MapExt.remove key values
-        //                 i0
-        //             | i0 :: r ->
-        //                 values.[key] <- r
-        //                 //values <- MapExt.add key r values
-        //                 i0
-        //             | _ ->
-        //                 failwith ""
+        for i0 in 0..m-1 do
+            let biggestIdx =
+                let (KeyValue(key,indices)) = values |> Seq.last
+                //let (key, indices) = MapExt.tryItem (values.Count - 1) values |> Option.get
+                match indices with
+                    | [i0] -> 
+                        values.Remove(key) |> ignore
+                        //values <- MapExt.remove key values
+                        i0
+                    | i0 :: r ->
+                        values.[key] <- r
+                        //values <- MapExt.add key r values
+                        i0
+                    | _ ->
+                        failwith ""
                 
-        //     if biggestIdx <> i0 then
-        //         let v0 = w i0 //B.[i0, i0]
-        //         swap i0 biggestIdx
+            if biggestIdx <> i0 then
+                let v0 = w i0 //B.[i0, i0]
+                swap i0 biggestIdx
                
-        //         match values.TryGetValue(v0) with
-        //         | (true,o) -> 
-        //             values.[v0] <- o |> List.map (fun ii -> if ii = i0 then biggestIdx else ii)
-        //         | _ -> 
-        //             values.[v0] <- []                
-        //         // values <- 
-        //         //     MapExt.alter v0 (fun o ->
-        //         //         let o = Option.defaultValue [] o
-        //         //         o |> List.map (fun ii -> if ii = i0 then biggestIdx else ii) |> Some
-        //         //     ) values
+                match values.TryGetValue(v0) with
+                | (true,o) -> 
+                    values.[v0] <- o |> List.map (fun ii -> if ii = i0 then biggestIdx else ii)
+                | _ -> 
+                    values.[v0] <- []                
+                // values <- 
+                //     MapExt.alter v0 (fun o ->
+                //         let o = Option.defaultValue [] o
+                //         o |> List.map (fun ii -> if ii = i0 then biggestIdx else ii) |> Some
+                //     ) values
 
     
-        // for i0 in 0..m-2 do
-        //     if w i0 < LanguagePrimitives.GenericZero then
-        //         let i1 = m-1
-        //         setw i0 (-w i0)
-        //         setw i1 (-w i1)
-        //         applyGivensTransposedMat Vt i0 i1 -LanguagePrimitives.GenericOne LanguagePrimitives.GenericZero
+        for i0 in 0..m-2 do
+            if w i0 < LanguagePrimitives.GenericZero then
+                let i1 = m-1
+                setw i0 (-w i0)
+                setw i1 (-w i1)
+                applyGivensTransposedMat Vt i0 i1 -LanguagePrimitives.GenericOne LanguagePrimitives.GenericZero
 
         suc
 
@@ -230,33 +240,33 @@ module private SVDHelpers =
 type SVD private() =
 
     static let doubleEps = 1E-20
-    static let floatEps = 1E-15f
+    static let floatEps = float32 1E-6
 
     static member DecomposeInPlace(U : NativeMatrix<float>, S : NativeMatrix<float>, Vt : NativeMatrix<float>) =
-        //if S.SX <= S.SY then
+        if S.SX <= S.SY then
             let anorm = qrBidiagonalizeNative doubleEps U S Vt
             svdBidiagonalNative anorm U S Vt
-        // else
-        //     // B = U * B' * Vt
-        //     // Bt = V * Bt' * Ut
-        //     let Ut = U.Transposed
-        //     let V = Vt.Transposed
-        //     let St = S.Transposed
-        //     let anorm = qrBidiagonalizeNative doubleEps V St Ut
-        //     svdBidiagonalNative anorm V St Ut
+        else
+            // B = U * B' * Vt
+            // Bt = V * Bt' * Ut
+            let Ut = U.Transposed
+            let V = Vt.Transposed
+            let St = S.Transposed
+            let anorm = qrBidiagonalizeNative doubleEps V St Ut
+            svdBidiagonalNative anorm V St Ut
 
     static member DecomposeInPlace(U : NativeMatrix<float32>, S : NativeMatrix<float32>, Vt : NativeMatrix<float32>) =
-        //if S.SX <= S.SY then
+        if S.SX <= S.SY then
             let anorm = qrBidiagonalizeNative floatEps U S Vt
             svdBidiagonalNative anorm U S Vt
-        // else
-        //     // B = U * B' * Vt
-        //     // Bt = V * Bt' * Ut
-        //     let Ut = U.Transposed
-        //     let V = Vt.Transposed
-        //     let St = S.Transposed
-        //     let anorm = qrBidiagonalizeNative floatEps V St Ut
-        //     svdBidiagonalNative anorm V St Ut
+        else
+            // B = U * B' * Vt
+            // Bt = V * Bt' * Ut
+            let Ut = U.Transposed
+            let V = Vt.Transposed
+            let St = S.Transposed
+            let anorm = qrBidiagonalizeNative floatEps V St Ut
+            svdBidiagonalNative anorm V St Ut
             
     static member DecomposeInPlace(U : Matrix<float>, S : Matrix<float>, Vt : Matrix<float>) =
         let mutable U = U

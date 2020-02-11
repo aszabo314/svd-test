@@ -10,16 +10,16 @@ type MatrixShape =
     | Triangular of upper : bool
     | ProperTriangular of upper : bool
 
-type MatrixKind =
+type MatrixKind<'a> =
     | Arbitrary
-    | Constant 
+    | Constant of 'a
     | Ones     
     | Zeros
 
 type PrettyMatrix<'a> = 
     {
         shape : MatrixShape
-        kind : MatrixKind
+        kind : MatrixKind<'a>
         rows : int
         cols : int
         value : Matrix<'a>
@@ -30,10 +30,10 @@ let lineRx = System.Text.RegularExpressions.Regex @"(\r\n)|\n"
 let indent (str : string) =
     lineRx.Split(str) |> Array.map ((+) "    ") |> String.concat "\n"
 
-let matStr (m : Matrix<float>) =
+let inline matStr (m : Matrix< ^a >) =
     let res = 
         Array.init (int m.SX) (fun c -> Array.init (int m.SY) (fun r -> 
-            let str = sprintf "%.3f" m.[c,r]
+            let str = sprintf "%.3f" (float m.[c,r])
             if str.StartsWith "-" then str
             else " " + str
         ))
@@ -55,26 +55,50 @@ let matStr (m : Matrix<float>) =
             yield line.Trim()
     ]    
 
+    
+let inline printMat (name : string) (m : NativeMatrix< ^a >) =
+    let res = 
+        Array.init (int m.SX) (fun c -> Array.init (int m.SY) (fun r -> 
+            let str = sprintf "%.3f" (float m.[c,r])
+            if str.StartsWith "-" then str
+            else " " + str
+        ))
+    let lens = res |> Array.map (fun col -> col |> Seq.map String.length |> Seq.max)
+    let pad (len : int) (s : string) =
+        if s.Length < len then s + (System.String(' ',len-s.Length))
+        else s
+
+    let padded =
+        res |> Array.mapi (fun i col -> 
+            col |> Array.map (pad lens.[i])
+        )
+            
+    System.Console.WriteLine("{0}", name)
+    for r in 0..int m.SY-1 do
+        let mutable line = ""
+        for c in 0..int m.SX-1 do
+            line <- line + " " + padded.[c].[r]
+        System.Console.WriteLine("    {0}", line.Trim())
+
+
 
 type Arbitraries () = 
 
     static let properFloat =
-        Arb.generate |> Gen.filter (fun v -> not (System.Double.IsNaN(v) || System.Double.IsInfinity(v) || abs(v) > 1E20))
+        Arb.generate |> Gen.filter (fun v -> not (System.Double.IsNaN(v) || System.Double.IsInfinity(v) || abs(v) > 1E20 || abs(v) < 1E-20))
 
-    static let arrayGen (k : MatrixKind) (len : int)=
+    static let arrayGen (k : MatrixKind<float>) (len : int)=
         match k with
         | Arbitrary -> 
             Gen.arrayOfLength len properFloat
-        | Constant -> 
-            properFloat |> Gen.map (fun v -> 
-                Array.create len v
-            )
+        | Constant v -> 
+            Gen.constant (Array.create len v)
         | Ones -> 
             Gen.constant (Array.create len 1.0)
         | Zeros -> 
             Gen.constant (Array.zeroCreate len)
 
-    static member GenerateMatrix (r : int, c : int, s : MatrixShape, k : MatrixKind) =
+    static member GenerateMatrix (r : int, c : int, s : MatrixShape, k : MatrixKind<float>) =
         gen {
             let arrGen = arrayGen k
             match s with
@@ -135,14 +159,27 @@ type Arbitraries () =
                        )
                         
         }
-
+        
+    static member MatrixKind() = 
+        gen {
+            let! ctor = Gen.frequency [1, Gen.constant Arbitrary; 1, Gen.constant Ones; 1, Gen.constant Zeros; 1, Gen.constant (Constant 0.0)]      
+            match ctor with
+            | Constant _ ->
+                let! f = properFloat
+                return Constant f
+            | e ->
+                return e
+        } |> Arb.fromGen
+        
     static member Matrix() =
         gen {
-            let! square = Gen.frequency [1, Gen.constant true]      
+            let! square = Gen.frequency [1, Gen.constant true; 10, Gen.constant false]      
             let! (r : int) = Gen.choose(1,25)
             let! (c : int) = if square then Gen.constant r else Gen.choose(1,25)
             let! s = Arb.generate<MatrixShape>
-            let! k = Arb.generate<MatrixKind>
+            let! k = Arb.generate<MatrixKind<float>>
+
+
             let! value = Arbitraries.GenerateMatrix(r, c, s, k)
             return 
                 {
@@ -160,8 +197,17 @@ type Arbitraries () =
             let! (r : int) = Gen.choose(1,25)
             let! (c : int) = if square then Gen.constant r else Gen.choose(1,25)
             let! s = Arb.generate<MatrixShape>
-            let! k = Arb.generate<MatrixKind>
+            let! k = Arb.generate<MatrixKind<float>>
             let! value = Arbitraries.GenerateMatrix(r, c, s, k)
+
+
+            let k =
+                match k with
+                | Zeros -> Zeros
+                | Ones -> Ones
+                | Constant v -> Constant (float32 v)
+                | Arbitrary -> Arbitrary
+
             return 
                 {
                     shape = s
@@ -174,12 +220,12 @@ type Arbitraries () =
 
 let cfg : FsCheckConfig =
     { FsCheckConfig.defaultConfig with 
-        maxTest = 10000
+        maxTest = 1000000
         arbitrary = [ typeof<Arbitraries> ] 
     }
 
 let epsilon = 1E-8
-let floatEpsilon = 1E-3f
+let floatEpsilon = 0.001f
 
 open System.Runtime.CompilerServices
 
@@ -249,7 +295,7 @@ type MatrixProperties private() =
         let err = a.InnerProduct(b,(fun a b -> abs (a-b)),0.0,max)
         if err > epsilon then
             printfn "ERROR: %A" err
-        err <= epsilon    
+        err <= epsilon 
 
     [<Extension>]
     static member ApproximateEquals(a : Matrix<float32>, b : Matrix<float32>) =
@@ -306,6 +352,42 @@ type MatrixProperties private() =
         maxError <= floatEpsilon
 
 
+    [<Extension>]
+    static member DecreasingDiagonal(m : Matrix<float>) =
+        let mutable wrong = []
+        let mutable last = System.Double.PositiveInfinity
+        m.ForeachXYIndex (fun (x : int64) (y : int64) (i : int64) ->
+            if x = y then 
+                if m.[i] > last then
+                    wrong <- (last, m.[i]) :: wrong
+                last <- m.[i]
+        )
+        match wrong with
+        | [] -> 
+            true
+        | wrong ->  
+            printfn "ERROR: %A" wrong
+            false
+
+            
+
+    [<Extension>]
+    static member DecreasingDiagonal(m : Matrix<float32>) =
+        let mutable wrong = []
+        let mutable last = System.Single.PositiveInfinity
+        m.ForeachXYIndex (fun (x : int64) (y : int64) (i : int64) ->
+            if x = y then 
+                if m.[i] > last then
+                    wrong <- (last, m.[i]) :: wrong
+                last <- m.[i]
+        )
+        match wrong with
+        | [] -> 
+            true
+        | wrong ->  
+            printfn "ERROR: %A" wrong
+            false
+
 let qr =
     testList "[QR64] decompose" [
         testPropertyWithConfig cfg "[QR64] Q*R = M" (fun (mat : PrettyMatrix<float>) -> 
@@ -350,30 +432,71 @@ let qrBidiag =
 
 let svd = 
     testList "[SVD64] decompose" [
-        testPropertyWithConfigStdGen (1559202058, 296705199) cfg "[SVD64] U*Ut = ID " (fun (mat : PrettyMatrix<float>) -> 
+        testPropertyWithConfig cfg "[SVD64] U*Ut = ID " (fun (mat : PrettyMatrix<float>) -> 
             match SVD.decompose mat.value with
             | Some (u,_,_) -> u.IsOrtho()
             | None -> true
         )
-        // testPropertyWithConfig cfg "[SVD64] S is diagonal" (fun (mat : PrettyMatrix<float>) -> 
-        //     match SVD.decompose mat.value with
-        //     | Some (_,s,_) -> s.IsDiagonal()
-        //     | None -> true
-        // )
+        testPropertyWithConfig cfg "[SVD64] S is diagonal" (fun (mat : PrettyMatrix<float>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,s,_) -> s.IsDiagonal()
+            | None -> true
+        )
+        
+        testPropertyWithConfig cfg "[SVD64] S is decreasing" (fun (mat : PrettyMatrix<float>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,s,_) -> s.DecreasingDiagonal()
+            | None -> true
+        )
 
-        // testPropertyWithConfig cfg "[SVD64] V*Vt = ID" (fun (mat : PrettyMatrix<float>) -> 
-        //     match SVD.decompose mat.value with
-        //     | Some (_,_,vt) -> vt.IsOrtho()
-        //     | None -> true
-        // )        
-        // testPropertyWithConfig cfg "[SVD64] U*S*Vt = M" (fun (mat : PrettyMatrix<float>) -> 
-        //     match SVD.decompose mat.value with
-        //     | Some (u,s,vt) -> 
-        //         let res = u.Multiply(s.Multiply(vt))
-        //         res.ApproximateEquals(mat.value)
-        //     | None ->
-        //         true            
-        // )
+        testPropertyWithConfig cfg "[SVD64] V*Vt = ID" (fun (mat : PrettyMatrix<float>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,_,vt) -> vt.IsOrtho()
+            | None -> true
+        )        
+        testPropertyWithConfig cfg "[SVD64] U*S*Vt = M" (fun (mat : PrettyMatrix<float>) -> 
+            match SVD.decompose mat.value with
+            | Some (u,s,vt) -> 
+                let res = u.Multiply(s.Multiply(vt))
+                res.ApproximateEquals(mat.value)
+            | None ->
+                true            
+        )
+    ]   
+  
+
+let svd32 = 
+    testList "[SVD32] decompose" [
+        testPropertyWithConfig cfg "[SVD32] U*Ut = ID " (fun (mat : PrettyMatrix<float32>) -> 
+            match SVD.decompose mat.value with
+            | Some (u,_,_) -> u.IsOrtho()
+            | None -> true
+        )
+        testPropertyWithConfig cfg "[SVD32] S is diagonal" (fun (mat : PrettyMatrix<float32>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,s,_) -> s.IsDiagonal()
+            | None -> true
+        )
+        
+        testPropertyWithConfig cfg "[SVD32] S is decreasing" (fun (mat : PrettyMatrix<float32>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,s,_) -> s.DecreasingDiagonal()
+            | None -> true
+        )
+
+        testPropertyWithConfig cfg "[SVD32] V*Vt = ID" (fun (mat : PrettyMatrix<float32>) -> 
+            match SVD.decompose mat.value with
+            | Some (_,_,vt) -> vt.IsOrtho()
+            | None -> true
+        )        
+        testPropertyWithConfig cfg "[SVD32] U*S*Vt = M" (fun (mat : PrettyMatrix<float32>) -> 
+            match SVD.decompose mat.value with
+            | Some (u,s,vt) -> 
+                let res = u.Multiply(s.Multiply(vt))
+                res.ApproximateEquals(mat.value)
+            | None ->
+                true            
+        )
     ]   
 
 
@@ -424,32 +547,85 @@ let allTests =
         qr32
         qrBidiag32
         svd
+        svd32
     ]
 [<EntryPoint>]
-let main argv = 
-    let mat = Arbitraries.GenerateMatrix(4,4,ProperTriangular true, Ones) |> Gen.eval 0 (FsCheck.Random.StdGen(0,0))
+let main argv =
+    Aardvark.Init()
+
+    let img = PixImage.Create(@"C:\Users\Schorsch\Desktop\images\IMG_6975.jpg").ToPixImage<byte>()
+
+   
+    let trans (m : Matrix<float>) =
+        let mutable (u, s, vt) = SVD.decompose m |> Option.get
+
+        let diag = int (min s.SX s.SY)
+        for i in 0 ..diag - 1 do
+            s.[i,i] <- ((abs s.[i,i] / s.[0,0]) ** (1.0 / 1.2)) *  s.[0,0]
+        u.Multiply(s.Multiply(vt))
+
+    let toImg (m : Matrix<float>) (l : float) (h : float) =
+        let img = PixImage<byte>(Col.Format.RGBA, V2i m.Size)
+        img.GetMatrix<C4b>().SetMap(m, fun v -> 
+            let b = 255.0 * ((v - l) / (h - l) |> clamp 0.0 1.0) |> byte
+            C4b(b,b,b,255uy)
+        ) |> ignore
+        img
+
+        
+    let toImgRGB (r : Matrix<float>) (g : Matrix<float>) (b: Matrix<float>) (l : float) (h : float) =
+        let img = PixImage<byte>(Col.Format.RGBA, V2i r.Size)
+        img.GetMatrix<C4b>().SetMap3(r, g, b, fun r g b -> 
+            let r = 255.0 * ((r - l) / (h - l) |> clamp 0.0 1.0) |> byte
+            let g = 255.0 * ((g - l) / (h - l) |> clamp 0.0 1.0) |> byte
+            let b = 255.0 * ((b - l) / (h - l) |> clamp 0.0 1.0) |> byte
+            C4b(r,g,b,255uy)
+        ) |> ignore
+        img
+
+    let fr = Matrix<float>(img.Size)
+    let fg = Matrix<float>(img.Size)
+    let fb = Matrix<float>(img.Size)
+    fr.SetMap(img.GetMatrix<C4b>(), fun c -> float c.R / 255.0) |> ignore
+    fg.SetMap(img.GetMatrix<C4b>(), fun c -> float c.G / 255.0) |> ignore
+    fb.SetMap(img.GetMatrix<C4b>(), fun c -> float c.B / 255.0) |> ignore
+        
+
+    let r = trans fr
+    let g = trans fg
+    let b = trans fb
+
+    (toImgRGB r g b 0.0 1.0).SaveAsImage @"C:\Users\Schorsch\Desktop\comp.png"
+
+    //(toImg u -1.0 1.0).SaveAsImage @"C:\Users\Schorsch\Desktop\U.png"
+    //(toImg vt -1.0 1.0).SaveAsImage @"C:\Users\Schorsch\Desktop\Vt.png"
+    //(toImg s 0.0 s.[0,0]).SaveAsImage @"C:\Users\Schorsch\Desktop\S.png"
 
 
 
-    let (a,b,c) = SVD.decompose mat |> Option.get
-    printfn "a:"
-    printfn "%s" (matStr a)
-    printfn "b:"
-    printfn "%s" (matStr b)
-    printfn "c:"
-    printfn "%s" (matStr c)
 
-    let aorth = a.IsOrtho()
-    let corth = c.IsOrtho()
+    //let mat = Arbitraries.GenerateMatrix(2,7,Full,Arbitrary) |> Gen.eval 0 (FsCheck.Random.StdGen(425323423,123123))
 
-    let m = a.Multiply(b.Multiply(c))
-    printfn "M:"
-    printfn "%s" (matStr m)
-    printfn "real:"
-    printfn "%s" (matStr mat)
-    Log.line "%A" (m.ApproximateEquals(mat))
+    //let (u,s,vt) = SVD.decompose mat |> Option.get
+    //printfn "u:"
+    //printfn "%s" (matStr u)
+    //printfn "s:"
+    //printfn "%s" (matStr s)
+    //printfn "vt:"
+    //printfn "%s" (matStr vt)
 
-    // let cfg = { defaultConfig with parallel = false }
-    // Expecto.Tests.runTests cfg svd |> printfn "%A"
+    //let d = s.IsDiagonal()
+    //let aorth = u.IsOrtho()
+    //let corth = vt.IsOrtho()
+
+    //let m = u.Multiply(s.Multiply(vt))
+    //printfn "M:"
+    //printfn "%s" (matStr m)
+    //printfn "real:"
+    //printfn "%s" (matStr mat)
+    //Log.line "%A" (m.ApproximateEquals(mat))
+
+    //let cfg = { defaultConfig with parallel = true }
+    //Expecto.Tests.runTests cfg allTests |> printfn "%A"
 
     0
