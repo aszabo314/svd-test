@@ -17,6 +17,7 @@ type MatrixShape =
     | ProperTriangular of upper : bool
     | CopyRows
     | CopyCols
+    | Symmetric
 
 type MatrixKind<'a> =
     | Arbitrary
@@ -173,6 +174,29 @@ type Arbitraries () =
                                         v    
                                     else 0.0                       
                                )
+                    | Symmetric ->
+                        let ct =
+                            match r <= c with 
+                            | true -> (r*(r+1))/2+(c-r)*r
+                            | false -> (c*(c+1))/2+(r-c)*c
+                        let! arr = arrGen ct
+
+                        let mutable idx = 0
+                        let cache = Dict()
+
+                        let get (c : V2l) =
+                            let k = 
+                                if c.X < c.Y then (c.X, c.Y)
+                                else (c.Y, c.X)
+
+                            cache.GetOrCreate(k, fun k ->
+                                let i = idx
+                                idx <- idx + 1
+                                arr.[i]
+                            )
+
+
+                        return Matrix<float>(V2l(c,r)).SetByCoord get                       
                 }                   
             let! trafoed = 
                 gen {
@@ -411,7 +435,6 @@ type MatrixProperties private() =
             printfn "ERROR: %A" wrong
             false
 
-            
 
     [<Extension>]
     static member DecreasingDiagonal(m : Matrix<float32>) =
@@ -447,6 +470,8 @@ let qr =
             let (_,r) = QR.decompose mat.value
             r.IsUpperRight()
         )
+
+        
     ]    
 
 
