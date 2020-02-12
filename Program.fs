@@ -25,6 +25,16 @@ type MatrixKind<'a> =
     | Ones     
     | Zeros
 
+type WideMatrix<'a> = 
+    {
+        shape : MatrixShape
+        kind : MatrixKind<'a>
+        trafo : MatrixTrafo
+        rows : int
+        cols : int
+        value : Matrix<'a>
+    }    
+
 type PrettyMatrix<'a> = 
     {
         shape : MatrixShape
@@ -279,10 +289,62 @@ type Arbitraries () =
                     value = value.Map(float32)
                 }                
         } |> Arb.fromGen
+        
+    static member WideMatrix() =
+        gen {
+            let! square = Gen.frequency [1, Gen.constant true; 10, Gen.constant false]      
+            let! (r : int) = Gen.choose(1,25)
+            let! (c : int) = if square then Gen.constant r else Gen.choose(r,26)
+            let! s = Arb.generate<MatrixShape>
+            let! k = Arb.generate<MatrixKind<float>>
+            let! t = Arb.generate<MatrixTrafo> |> Gen.filter (fun trafo -> trafo <> Transposed)
+
+
+            let! value = Arbitraries.GenerateMatrix(r, c, s, k,t)
+            return 
+                {
+                    WideMatrix.shape = s
+                    WideMatrix.kind = k                    
+                    WideMatrix.trafo = t
+                    WideMatrix.rows = r
+                    WideMatrix.cols = c
+                    WideMatrix.value = value
+                }                
+        } |> Arb.fromGen
+
+    static member WideMatrixFloat() =
+        gen {
+            let! square = Gen.frequency [1, Gen.constant true; 10, Gen.constant false]      
+            let! (r : int) = Gen.choose(1,25)
+            let! (c : int) = if square then Gen.constant r else Gen.choose(r,26)
+            let! s = Arb.generate<MatrixShape>
+            let! k = Arb.generate<MatrixKind<float>>
+            let! t = Arb.generate<MatrixTrafo> |> Gen.filter (fun trafo -> trafo <> Transposed)
+
+
+            let! value = Arbitraries.GenerateMatrix(r, c, s, k,t)            
+            
+            let k =
+                match k with
+                | Zeros -> Zeros
+                | Ones -> Ones
+                | Constant v -> Constant (float32 v)
+                | Arbitrary -> Arbitrary
+
+            return 
+                {
+                    WideMatrix.shape = s
+                    WideMatrix.kind = k                    
+                    WideMatrix.trafo = t
+                    WideMatrix.rows = r
+                    WideMatrix.cols = c
+                    WideMatrix.value = value.Map(float32)
+                }                             
+        } |> Arb.fromGen
 
 let cfg : FsCheckConfig =
     { FsCheckConfig.defaultConfig with 
-        maxTest = 100000
+        maxTest = 10000
         arbitrary = [ typeof<Arbitraries> ] 
     }
 
@@ -470,10 +532,47 @@ let qr =
             let (_,r) = QR.decompose mat.value
             r.IsUpperRight()
         )
-
-        
     ]    
 
+let rq =
+    testList "[RQ64] decompose" [
+        testPropertyWithConfig cfg "[RQ64] R*Q = M" (fun (mat : WideMatrix<float>) -> 
+            if mat.value.SY > mat.value.SX then failwith "asuofhasiofh"
+            let (r,q) = RQ.decompose mat.value
+            let res = r.Multiply(q)
+            res.ApproximateEquals(mat.value)
+        )
+
+        testPropertyWithConfig cfg "[RQ64] Q*Qt = ID" (fun (mat : WideMatrix<float> ) -> 
+            let (_,q) = RQ.decompose mat.value
+            q.IsOrtho()
+        )
+
+        testPropertyWithConfig cfg "[RQ64] R = right upper" (fun (mat : WideMatrix<float> ) -> 
+            let (r,_) = RQ.decompose mat.value
+            r.IsUpperRight()
+        )
+    ]    
+
+let rq32 =
+    testList "[RQ32] decompose" [
+        testPropertyWithConfig cfg "[RQ32] R*Q = M" (fun (mat : WideMatrix<float32>) -> 
+            if mat.value.SY > mat.value.SX then failwith "asuofhasiofh"
+            let (r,q) = RQ.decompose mat.value
+            let res = r.Multiply(q)
+            res.ApproximateEquals(mat.value)
+        )
+
+        testPropertyWithConfig cfg "[RQ32] Q*Qt = ID" (fun (mat : WideMatrix<float32> ) -> 
+            let (_,q) = RQ.decompose mat.value
+            q.IsOrtho()
+        )
+
+        testPropertyWithConfig cfg "[RQ32] R = right upper" (fun (mat : WideMatrix<float32> ) -> 
+            let (r,_) = RQ.decompose mat.value
+            r.IsUpperRight()
+        )
+    ]
 
 let qrBidiag = 
     testList "[QR64] bidiagonalize" [
@@ -606,13 +705,15 @@ let qrBidiag32 =
             res.ApproximateEquals(mat.value)
         )
     ]    
-let allTests =
+let all =
     testList "AllTests" [
         qr
+        rq
         qrBidiag
-        //qr32
-        //qrBidiag32
         svd
+        //qr32
+        //rq32
+        //qrBidiag32
         //svd32
     ]
 [<EntryPoint>]
@@ -692,6 +793,6 @@ let main argv =
     // Log.line "%A" (m.ApproximateEquals(mat))
 
     let cfg = { defaultConfig with parallel = true }
-    Expecto.Tests.runTests cfg allTests |> printfn "%A"
+    Expecto.Tests.runTests cfg all |> printfn "%A"
 
     0

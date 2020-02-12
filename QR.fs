@@ -70,15 +70,32 @@ module internal QRHelpers =
         let drR = nativeint pR.DY * sa
         let dcR = nativeint pR.DX * sa
 
-        let mutable pc0 = NativePtr.toNativeInt pR.Pointer
-        let mutable pcc = pc0
+        let pr = NativePtr.toNativeInt pR.Pointer
+
+#if DEBUG
+        let maxp = nativeint (rows * cols) * sa
+#endif
+        let inline read (p : nativeint) : ^a =
+#if DEBUG    
+            if p < 0n || p > maxp then failwithf "[QR] bad read: %A outside %A" p maxp
+#endif        
+            NativeInt.read< ^a > (pr + p)
+
+        let inline write (p : nativeint) (v : ^a ) : unit =
+#if DEBUG    
+            if p < 0n || p > maxp then failwithf "[RQ] bad write: %A outside %A" p maxp
+#endif        
+            NativeInt.write< ^a > (pr + p) v
+
+        let mutable pc0 = 0n
+        let mutable pcc = 0n
         for c in 0 .. cols - 1 do
             // wiki performs this loop backwards (should not really matter)
             let mutable prc = pcc + drR
             let mutable pr0 = pc0 + drR
             for r in c + 1 .. rows - 1 do 
-                let vcc : ^a = NativeInt.read pcc // important since R.[c,c] changes
-                let vrc : ^a = NativeInt.read prc 
+                let vcc : ^a = read pcc // important since R.[c,c] changes
+                let vrc : ^a = read prc 
 
                 // if the dst-element is not already zero then make it zero
                 if not (tiny eps vrc) then
@@ -92,11 +109,11 @@ module internal QRHelpers =
                     let mutable p1 = prc 
                     // adjust affected elements
                     for ci in c .. cols - 1 do
-                        let A = NativeInt.read< ^a > p0
-                        let B = NativeInt.read< ^a > p1
+                        let A = read p0
+                        let B = read p1
                         
-                        NativeInt.write p0 ( cos * A + sin * B )
-                        NativeInt.write p1 (-sin * A + cos * B )
+                        write p0 ( cos * A + sin * B )
+                        write p1 (-sin * A + cos * B )
                         
                         p0 <- p0 + dcR
                         p1 <- p1 + dcR
@@ -114,31 +131,47 @@ module internal QRHelpers =
     let inline rqDecomposeNative (eps : ^a) (pR : NativeMatrix< ^a >) (pQ : NativeMatrix< ^a >) =
         let rows = int pR.SY
         let cols = int pR.SX
-        if rows > cols then failwithf "cannot RQ decompose matrix with %d rows and %d cols" rows cols
-
+#if DEBUG    
+        if rows > cols then failwithf "cannot RQ decompose matrix with %d rows > %d cols" rows cols
+#endif
         // pQ <- identity
         pQ.SetByCoord (fun (v : V2i) -> if v.X = v.Y then LanguagePrimitives.GenericOne else LanguagePrimitives.GenericZero)
-        
+
         let sa = nativeint sizeof< ^a >
         let drR = nativeint pR.DY * sa
         let dcR = nativeint pR.DX * sa
 
         let pr = NativePtr.toNativeInt pR.Pointer
 
+#if DEBUG
+        let maxp = nativeint (rows * cols) * sa
+#endif    
+        let inline read (p : nativeint) : ^a = 
+#if DEBUG    
+            if p < 0n || p > maxp then failwithf "[RQ] bad read: %A outside %A" p maxp
+#endif        
+            NativeInt.read< ^a > (pr + p)
+        
+        let inline write (p : nativeint) (v : ^a ) : unit = 
+#if DEBUG
+            if p < 0n || p > maxp then failwithf "[RQ] bad write: %A outside %A" p maxp
+#endif    
+            NativeInt.write< ^a > (pr + p) v
+
 
         let diag = min cols rows
-        let mutable pdd = pr + (dcR + drR) * nativeint (diag - 1)   //ptr (diag - 1) (diag - 1)
-        let mutable pd0 = pr + drR * nativeint (diag - 1)           //ptr (diag - 1) 0
-        let mutable p0d = pr + dcR * nativeint (diag - 1)           //ptr 0 (diag - 1)
+        let mutable pdd = (dcR + drR) * nativeint (diag - 1)   //ptr (diag - 1) (diag - 1)
+        let mutable pd0 = drR * nativeint (diag - 1)           //ptr (diag - 1) 0
+        let mutable p0d = dcR * nativeint (diag - 1)           //ptr 0 (diag - 1)
 
         for d in 1 .. diag - 1 do
             let d = diag - d
 
             let mutable pdc = pd0
-            let mutable p0c = pr
+            let mutable p0c = 0n
             for c in 0 .. d - 1 do
-                let vcc : ^a = NativeInt.read pdd // important since R.[d,d] changes
-                let vrc : ^a = NativeInt.read pdc
+                let vcc : ^a = read pdd // important since R.[d,d] changes
+                let vrc : ^a = read pdc
                 
                 // if the dst-element is not already zero then make it zero
                 if not (tiny eps vrc) then
@@ -155,11 +188,11 @@ module internal QRHelpers =
                     for ri in 0 .. d do
                         //let p0 = ptr ri d
                         //let p1 = ptr ri c
-                        let A = NativeInt.read< ^a > p0
-                        let B = NativeInt.read< ^a > p1
+                        let A = read p0
+                        let B = read p1
                         
-                        NativeInt.write p0 ( cos * A + sin * B )
-                        NativeInt.write p1 (-sin * A + cos * B )
+                        write p0 ( cos * A + sin * B )
+                        write p1 (-sin * A + cos * B )
                         p0 <- p0 + drR
                         p1 <- p1 + drR
                         
